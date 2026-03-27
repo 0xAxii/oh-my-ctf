@@ -1,0 +1,16 @@
+[Unit]
+Description=oh-my-ctf Discord Bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=axii
+WorkingDirectory=/home/axii/ctf_llm
+ExecStart=/usr/bin/python3 /home/axii/ctf_llm/ctf-solver/main.py --discord
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
