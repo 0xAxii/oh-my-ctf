@@ -58,8 +58,29 @@ class AppServerSolver:
         self.client = AppServerClient(tool_executor=self._exec_tool)
 
     async def _exec_tool(self, tool_name: str, args: dict) -> str:
-        """Execute a tool — routes through docker exec if container_id is set."""
-        import subprocess as sp
+        """Execute a tool — routes through docker exec if container_id is set.
+
+        All subprocess calls are async to avoid blocking the event loop.
+        """
+
+        async def _run_cmd(cmd: list[str], timeout: float = 60, input_data: str = "") -> tuple[int, str, str]:
+            """Run a command asynchronously, return (returncode, stdout, stderr)."""
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE if input_data else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(input_data.encode() if input_data else None),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return -1, "", "Error: command timed out"
+            return proc.returncode, stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace")
 
         if tool_name == "bash":
             cmd = args.get("command", "")
@@ -68,19 +89,16 @@ class AppServerSolver:
                 full_cmd = ["docker", "exec", self.container_id, "bash", "-c", cmd]
             else:
                 full_cmd = ["bash", "-c", cmd]
-            try:
-                r = sp.run(full_cmd, capture_output=True, text=True, timeout=timeout)
-                return (r.stdout + r.stderr)[:50000]
-            except sp.TimeoutExpired:
-                return "Error: command timed out"
-            except Exception as e:
-                return f"Error: {e}"
+            rc, stdout, stderr = await _run_cmd(full_cmd, timeout=timeout)
+            if rc == -1:
+                return stderr
+            return (stdout + stderr)[:50000]
 
         elif tool_name == "read_file":
             path = args.get("path", "")
             if self.container_id:
-                r = sp.run(["docker", "exec", self.container_id, "cat", path], capture_output=True, text=True, timeout=10)
-                return r.stdout[:50000] if r.returncode == 0 else r.stderr
+                rc, stdout, stderr = await _run_cmd(["docker", "exec", self.container_id, "cat", path], timeout=10)
+                return stdout[:50000] if rc == 0 else stderr
             else:
                 try:
                     with open(path) as f:
@@ -92,9 +110,11 @@ class AppServerSolver:
             path = args.get("path", "")
             content = args.get("content", "")
             if self.container_id:
-                r = sp.run(["docker", "exec", "-i", self.container_id, "bash", "-c", f"cat > {path}"],
-                           input=content, capture_output=True, text=True, timeout=10)
-                return "OK" if r.returncode == 0 else r.stderr
+                rc, stdout, stderr = await _run_cmd(
+                    ["docker", "exec", "-i", self.container_id, "bash", "-c", f"cat > {path}"],
+                    timeout=10, input_data=content,
+                )
+                return "OK" if rc == 0 else stderr
             else:
                 try:
                     with open(path, "w") as f:
@@ -106,11 +126,10 @@ class AppServerSolver:
         elif tool_name == "list_files":
             path = args.get("path", "/challenge")
             if self.container_id:
-                r = sp.run(["docker", "exec", self.container_id, "ls", "-la", path], capture_output=True, text=True, timeout=10)
-                return r.stdout[:50000] if r.returncode == 0 else r.stderr
+                rc, stdout, stderr = await _run_cmd(["docker", "exec", self.container_id, "ls", "-la", path], timeout=10)
             else:
-                r = sp.run(["ls", "-la", path], capture_output=True, text=True, timeout=10)
-                return r.stdout[:50000] if r.returncode == 0 else r.stderr
+                rc, stdout, stderr = await _run_cmd(["ls", "-la", path], timeout=10)
+            return stdout[:50000] if rc == 0 else stderr
 
         return f"Unknown tool: {tool_name}"
 
