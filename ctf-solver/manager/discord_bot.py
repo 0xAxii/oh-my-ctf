@@ -88,12 +88,26 @@ class DiscordIO:
                 await interaction.response.send_message("challenges/ 디렉토리가 없습니다.")
                 return
 
-            dirs = sorted([d.name for d in challenges_dir.iterdir() if d.is_dir()])
+            dirs = sorted([d for d in challenges_dir.iterdir() if d.is_dir()], key=lambda d: d.name)
             if not dirs:
                 await interaction.response.send_message("등록된 챌린지가 없습니다. /challenge로 먼저 등록하세요.")
                 return
 
-            listing = "\n".join(f"`{i+1}` — {name}" for i, name in enumerate(dirs))
+            # Read category from description.md for display
+            entries = []
+            for d in dirs:
+                cat = ""
+                desc_file = d / "description.md"
+                if desc_file.exists():
+                    for line in desc_file.read_text(encoding="utf-8").split("\n"):
+                        if line.startswith("Category:"):
+                            cat = line.split(":", 1)[1].strip()
+                            break
+                label = f"{cat}_{d.name}" if cat else d.name
+                entries.append((d.name, label))
+
+            self._challenge_list = [e[0] for e in entries]
+            listing = "\n".join(f"`{i+1}` - {label}" for i, (_, label) in enumerate(entries))
             self._challenge_list = dirs
             await interaction.response.send_message(
                 f"**챌린지 목록:**\n{listing}\n\n"
