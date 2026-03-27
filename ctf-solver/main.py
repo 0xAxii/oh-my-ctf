@@ -200,7 +200,7 @@ async def run_interactive(
         await manager.destroy()
 
 
-async def run_direct(challenge_dir: str, category: str = "", flag_format: str = "", remote: str = "") -> None:
+async def run_direct(challenge_dir: str, category: str = "", flag_format: str = "", remote: str = "", use_docker: bool = True) -> None:
     """Direct mode — skip Manager conversation, run recon+swarm immediately."""
     logger.info("Direct mode: %s (category=%s, remote=%s)", challenge_dir, category or "auto", remote or "none")
 
@@ -219,9 +219,11 @@ async def run_direct(challenge_dir: str, category: str = "", flag_format: str = 
         recon_facts=recon_facts,
         category=category,
         flag_format=flag_format or r"(flag|FLAG|DH|CTF|GoN)\{[^}]+\}",
+        use_docker=use_docker,
     )
 
-    await write_output("Solver swarm 시작 (5.4 + 5.2 병렬)...")
+    mode = "Docker" if use_docker else "host"
+    await write_output(f"Solver swarm 시작 (5.4 + 5.2 병렬, {mode})...")
 
     # Run swarm with tool-request monitoring for direct mode
     swarm_task = asyncio.create_task(swarm.run(), name="swarm-direct")
@@ -267,10 +269,11 @@ def main() -> None:
     parser.add_argument("--category", help="Category hint (pwn/rev/crypto)")
     parser.add_argument("--flag-format", help="Flag regex override")
     parser.add_argument("--remote", "-r", help="Remote target (e.g. host:port or http://host:port)")
+    parser.add_argument("--no-docker", action="store_true", help="Run solvers on host instead of Docker")
     args = parser.parse_args()
 
     if args.challenge:
-        asyncio.run(run_direct(args.challenge, args.category or "", args.flag_format or "", args.remote or ""))
+        asyncio.run(run_direct(args.challenge, args.category or "", args.flag_format or "", args.remote or "", use_docker=not args.no_docker))
     else:
         asyncio.run(run_interactive())
 

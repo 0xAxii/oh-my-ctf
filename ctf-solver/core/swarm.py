@@ -20,6 +20,7 @@ from core.solver import AppServerSolver
 from core.solver_base import (
     CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, SolverResult,
 )
+from sandbox.container import ContainerManager
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,10 @@ class ChallengeSwarm:
     winner: SolverResult | None = None
     light_critic: LightCritic | None = None
 
+    use_docker: bool = True              # Run solvers in Docker containers
     workspace_dir: Path | None = None
+    _container_mgr: ContainerManager | None = None
+    _container_ids: dict[str, str] = field(default_factory=dict)  # model → container_id
 
     # Tool installation flow (host-only, same thread resume)
     tool_request_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
@@ -141,6 +145,23 @@ class ChallengeSwarm:
         """Run both solvers in parallel. Returns winner's result or None."""
         models = ["gpt-5.4", "gpt-5.2"]
         self.workspace_dir = _setup_workspace(self.challenge_dir, models)
+
+        # Create Docker containers if enabled
+        if self.use_docker:
+            self._container_mgr = ContainerManager()
+            for model in models:
+                try:
+                    cid = await self._container_mgr.create(
+                        self.category or "base",
+                        self.challenge_dir,
+                        model,
+                    )
+                    self._container_ids[model] = cid
+                    logger.info("[%s] Docker container: %s", model, cid[:12])
+                except Exception as e:
+                    logger.warning("[%s] Docker failed, running on host: %s", model, e)
+                    self.use_docker = False
+                    break
 
         self.light_critic = LightCritic(
             challenge_dir=str(self.workspace_dir),
@@ -198,6 +219,8 @@ class ChallengeSwarm:
         finally:
             if self.light_critic:
                 await self.light_critic.stop()
+            if self._container_mgr:
+                await self._container_mgr.destroy_all()
 
     def _solver_cwd(self, model: str) -> str:
         """Get solver's working directory in workspace."""
@@ -211,14 +234,16 @@ class ChallengeSwarm:
     ) -> SolverResult | None:
         """Run one solver with bump loop."""
         solver_cwd = self._solver_cwd(model)
+        container_id = self._container_ids.get(model, "")
         solver = AppServerSolver(
             model_spec=model,
             effort=effort,
-            challenge_dir=solver_cwd,
+            challenge_dir="/challenge" if container_id else solver_cwd,
             system_prompt=system_prompt,
             cancel_event=self.cancel_event,
             message_bus=self.message_bus,
             flag_format=self.flag_format,
+            container_id=container_id,
         )
         self.solvers[model] = solver
 

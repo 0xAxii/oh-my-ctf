@@ -105,7 +105,7 @@ class ContainerManager:
             "--detach",
             "--name", container_name,
             # Read-only challenge mount
-            "--mount", f"type=bind,source={challenge_path},target=/challenge,readonly",
+            "-v", f"{challenge_path}:/challenge:ro,z",
             # Writable workspace (anonymous volume)
             "--mount", "type=volume,destination=/workspace",
             # Resource limits (sensible defaults for CTF work)
@@ -116,7 +116,7 @@ class ContainerManager:
         if not self._network_enabled:
             cmd += ["--network", "none"]
 
-        cmd.append(image)
+        cmd += [image, "sleep", "infinity"]
 
         logger.info("Creating container %s from image %s", container_name, image)
         returncode, stdout, stderr = await _run_docker(*cmd)
