@@ -141,6 +141,12 @@ async def run_interactive(
             if user_input.lower() in ("quit", "exit", "종료"):
                 break
 
+            # Auto-set challenge_dir from Discord zip upload
+            if user_input.startswith("[챌린지]"):
+                challenge_dir = user_input.split("]", 1)[1].strip().split(" ")[0]
+                await write_output(f"manager> 챌린지 파일 수신: {challenge_dir}\n")
+                user_input = f"챌린지 파일이 {challenge_dir}에 준비되었습니다. 카테고리를 알려주세요."
+
             # Build context string for Manager
             context = ""
             if active_swarm:

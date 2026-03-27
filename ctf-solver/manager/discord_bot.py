@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import zipfile
+from pathlib import Path
 
 import discord
 
@@ -72,12 +74,42 @@ class DiscordIO:
                 logger.info("Discord message from %s: %s", message.author, text[:100])
                 await self._message_queue.put(text)
 
-            # Handle file attachments (challenge files)
+            # Handle file attachments — zip → auto-extract to challenges/
             for attachment in message.attachments:
                 dl_path = f"/tmp/discord_{attachment.filename}"
                 await attachment.save(dl_path)
-                await self._message_queue.put(f"[파일] {dl_path} ({attachment.filename})")
-                logger.info("Downloaded attachment: %s → %s", attachment.filename, dl_path)
+
+                if attachment.filename.endswith(".zip"):
+                    challenge_dir = self._extract_challenge(dl_path, attachment.filename)
+                    await self._message_queue.put(
+                        f"[챌린지] {challenge_dir} ({attachment.filename})"
+                    )
+                else:
+                    await self._message_queue.put(f"[파일] {dl_path} ({attachment.filename})")
+
+                logger.info("Downloaded attachment: %s", attachment.filename)
+
+    def _extract_challenge(self, zip_path: str, filename: str) -> str:
+        """Extract zip to challenges/{name}/ and return the path."""
+        project_root = Path(__file__).parent.parent.parent
+        name = Path(filename).stem  # strip .zip
+        challenge_dir = project_root / "challenges" / name
+        challenge_dir.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(challenge_dir)
+
+        # If zip contains a single top-level directory, flatten it
+        entries = list(challenge_dir.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            single_dir = entries[0]
+            for item in single_dir.iterdir():
+                item.rename(challenge_dir / item.name)
+            single_dir.rmdir()
+
+        file_count = sum(1 for _ in challenge_dir.rglob("*") if _.is_file())
+        logger.info("Extracted %s → %s (%d files)", filename, challenge_dir, file_count)
+        return str(challenge_dir)
 
     async def start(self) -> None:
         """Start the Discord bot in the background."""
