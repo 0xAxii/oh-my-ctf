@@ -68,6 +68,7 @@ async def run_interactive(
 ) -> None:
     """Main interactive loop — Manager talks to user, spawns and monitors swarm."""
     manager = Manager()
+    remote = ""
     active_swarm: ChallengeSwarm | None = None
     swarm_task: asyncio.Task | None = None
     # flag_queue is set on the swarm's LightCritic; we keep a reference here
@@ -148,9 +149,16 @@ async def run_interactive(
                         challenge_dir = line.split("]", 1)[1].strip().split(" ")[0]
                         break
                 await write_output(f"manager> 챌린지 파일 수신: {challenge_dir}\n")
-                # Keep original text (problem description etc) + append challenge info
                 user_input = user_input.replace(line, "").strip()
                 user_input += f"\n\n챌린지 파일이 {challenge_dir}에 준비되었습니다."
+
+            # Parse /challenge slash command registration
+            if "[등록]" in user_input:
+                for line in user_input.split("\n"):
+                    if "카테고리:" in line:
+                        category = line.split(":", 1)[1].strip()
+                    if "리모트:" in line:
+                        remote = line.split(":", 1)[1].strip()
 
             # Build context string for Manager
             context = ""

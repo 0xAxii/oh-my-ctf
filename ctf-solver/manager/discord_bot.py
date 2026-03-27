@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 
 import discord
+from discord import app_commands
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class DiscordIO:
         intents = discord.Intents.default()
         intents.message_content = True
         self.client = discord.Client(intents=intents)
+        self.tree = app_commands.CommandTree(self.client)
 
         self._channel: discord.TextChannel | None = None
         self._message_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -44,11 +46,66 @@ class DiscordIO:
         self._bot_task: asyncio.Task | None = None
 
         self._setup_handlers()
+        self._setup_commands()
+
+    def _setup_commands(self) -> None:
+        @self.tree.command(name="challenge", description="챌린지 등록 (파일은 메시지로 첨부)")
+        @app_commands.describe(
+            name="문제 이름",
+            category="카테고리 (pwn/rev/crypto/web/forensics/web3/misc/ai)",
+            description="문제 설명",
+            remote="원격 서버 주소 (선택, 예: host:port)",
+        )
+        async def challenge_cmd(
+            interaction: discord.Interaction,
+            name: str,
+            category: str,
+            description: str = "",
+            remote: str = "",
+        ):
+            self._channel = interaction.channel
+            self.channel_id = interaction.channel_id
+
+            parts = [f"[등록] {name}"]
+            parts.append(f"카테고리: {category}")
+            if description:
+                parts.append(f"설명: {description}")
+            if remote:
+                parts.append(f"리모트: {remote}")
+
+            combined = "\n".join(parts)
+            await self._message_queue.put(combined)
+            await interaction.response.send_message(f"챌린지 `{name}` ({category}) 등록 완료. 파일은 이 채널에 zip으로 올려주세요.")
+
+        @self.tree.command(name="solve", description="등록된 챌린지 풀이 시작")
+        async def solve_cmd(interaction: discord.Interaction):
+            self._channel = interaction.channel
+            self.channel_id = interaction.channel_id
+            await self._message_queue.put("풀이 시작")
+            await interaction.response.send_message("풀이 시작합니다.")
+
+        @self.tree.command(name="stop", description="풀이 중단")
+        async def stop_cmd(interaction: discord.Interaction):
+            await self._message_queue.put("중단")
+            await interaction.response.send_message("중단 요청 전달.")
+
+        @self.tree.command(name="status", description="현재 풀이 상태 확인")
+        async def status_cmd(interaction: discord.Interaction):
+            await self._message_queue.put("상태")
+            await interaction.response.send_message("상태 확인 중...")
+
+        @self.tree.command(name="hint", description="솔버에게 힌트 전달")
+        @app_commands.describe(text="힌트 내용")
+        async def hint_cmd(interaction: discord.Interaction, text: str):
+            await self._message_queue.put(f"[힌트] {text}")
+            await interaction.response.send_message(f"힌트 전달: {text}")
 
     def _setup_handlers(self) -> None:
         @self.client.event
         async def on_ready():
             logger.info("Discord bot connected as %s", self.client.user)
+            await self.tree.sync()
+            logger.info("Slash commands synced")
             if self.channel_id:
                 self._channel = self.client.get_channel(self.channel_id)
             self._ready.set()
