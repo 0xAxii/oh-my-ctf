@@ -100,10 +100,7 @@ class Manager:
             {"type": "text", "text": prompt}
         ], sandbox="readOnly")
 
-        try:
-            await asyncio.wait_for(done.wait(), timeout=60)
-        except asyncio.TimeoutError:
-            return "(Manager 응답 시간 초과)"
+        await done.wait()
 
         return "".join(buf).strip()
 
