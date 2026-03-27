@@ -10,10 +10,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
+from pathlib import Path
+
+# Load .env from project root
+_env_path = Path(__file__).parent.parent / ".env"
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
 
 from manager.manager import Manager
-from manager.terminal_io import read_input, write_output
+from manager.terminal_io import read_input as terminal_read, write_output as terminal_write
 from core.recon import run_recon
 from core.swarm import ChallengeSwarm
 from core.light_critic import LightCritic
@@ -53,6 +63,8 @@ async def run_interactive(
     challenge_dir: str = "",
     category: str = "",
     flag_format: str = "",
+    read_input=terminal_read,
+    write_output=terminal_write,
 ) -> None:
     """Main interactive loop — Manager talks to user, spawns and monitors swarm."""
     manager = Manager()
@@ -200,7 +212,7 @@ async def run_interactive(
         await manager.destroy()
 
 
-async def run_direct(challenge_dir: str, category: str = "", flag_format: str = "", remote: str = "", use_docker: bool = True) -> None:
+async def run_direct(challenge_dir: str, category: str = "", flag_format: str = "", remote: str = "", use_docker: bool = True, read_input=terminal_read, write_output=terminal_write) -> None:
     """Direct mode — skip Manager conversation, run recon+swarm immediately."""
     logger.info("Direct mode: %s (category=%s, remote=%s)", challenge_dir, category or "auto", remote or "none")
 
@@ -270,12 +282,38 @@ def main() -> None:
     parser.add_argument("--flag-format", help="Flag regex override")
     parser.add_argument("--remote", "-r", help="Remote target (e.g. host:port or http://host:port)")
     parser.add_argument("--no-docker", action="store_true", help="Run solvers on host instead of Docker")
+    parser.add_argument("--discord", action="store_true", help="Use Discord bot instead of terminal")
+    parser.add_argument("--channel", type=int, default=0, help="Discord channel ID (0 = auto-detect)")
     args = parser.parse_args()
 
-    if args.challenge:
-        asyncio.run(run_direct(args.challenge, args.category or "", args.flag_format or "", args.remote or "", use_docker=not args.no_docker))
-    else:
-        asyncio.run(run_interactive())
+    async def _run():
+        read_input = terminal_read
+        write_output = terminal_write
+        dio = None
+
+        if args.discord:
+            from manager.discord_bot import DiscordIO
+            dio = DiscordIO(channel_id=args.channel)
+            await dio.start()
+            read_input = dio.read_input
+            write_output = dio.write_output
+
+        try:
+            if args.challenge:
+                await run_direct(
+                    args.challenge, args.category or "", args.flag_format or "",
+                    args.remote or "", use_docker=not args.no_docker,
+                    read_input=read_input, write_output=write_output,
+                )
+            else:
+                await run_interactive(
+                    read_input=read_input, write_output=write_output,
+                )
+        finally:
+            if dio:
+                await dio.stop()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
