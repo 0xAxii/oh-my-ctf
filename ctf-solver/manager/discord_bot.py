@@ -54,16 +54,14 @@ class DiscordIO:
         @self.tree.command(name="challenge", description="챌린지 등록 (파일은 메시지로 첨부)")
         @app_commands.describe(
             name="문제 이름",
-            description="문제 설명",
+            description="문제 설명 (원격 서버 주소 포함 가능)",
             category="카테고리 (pwn/rev/crypto/web/forensics/web3/misc/ai)",
-            remote="원격 서버 주소 (예: host:port)",
         )
         async def challenge_cmd(
             interaction: discord.Interaction,
             name: str,
             description: str,
             category: str = "",
-            remote: str = "",
         ):
             self._channel = interaction.channel
             self.channel_id = interaction.channel_id
@@ -72,11 +70,10 @@ class DiscordIO:
                 "name": name,
                 "category": category,
                 "description": description,
-                "remote": remote,
             }
 
             await interaction.response.send_message(
-                f"챌린지 `{name}` ({category}) 등록. zip 파일을 올려주세요."
+                f"챌린지 `{name}` 등록." + (f" ({category})" if category else "") + " zip 파일을 올려주세요."
             )
 
         @self.tree.command(name="solve", description="챌린지 풀이 시작 — 목록에서 번호로 선택")
@@ -159,15 +156,23 @@ class DiscordIO:
                     idx = int(split[0].strip()) - 1
                     if 0 <= idx < len(self._challenge_list):
                         chosen = self._challenge_list[idx]
-                        remote_info = split[1].strip() if len(split) > 1 else ""
+                        extra = split[1].strip() if len(split) > 1 else ""
                         project_root = Path(__file__).parent.parent.parent
                         challenge_dir = str(project_root / "challenges" / chosen)
+
+                        # Append extra info (remote etc) to description.md
+                        if extra:
+                            desc_path = Path(challenge_dir) / "description.md"
+                            if desc_path.exists():
+                                with open(desc_path, "a", encoding="utf-8") as f:
+                                    f.write(f"\n\n## Remote\n{extra}\n")
+                            else:
+                                desc_path.write_text(f"# {chosen}\n\n## Remote\n{extra}\n", encoding="utf-8")
+
                         msg = f"풀이 시작\n문제: {chosen}\n경로: {challenge_dir}"
-                        if remote_info:
-                            msg += f"\n리모트: {remote_info}"
                         self._challenge_list = []
                         await self._message_queue.put(msg)
-                        await message.channel.send(f"`{chosen}` 풀이 시작." + (f" (remote: {remote_info})" if remote_info else ""))
+                        await message.channel.send(f"`{chosen}` 풀이 시작." + (f"\n{extra}" if extra else ""))
                         return
                 except ValueError:
                     pass
@@ -197,15 +202,12 @@ class DiscordIO:
                             desc_parts.append(f"\nCategory: {pc['category']}")
                         if pc.get("description"):
                             desc_parts.append(f"\n## Description\n{pc['description']}")
-                        if pc.get("remote"):
-                            desc_parts.append(f"\n## Remote\n{pc['remote']}")
                         desc_path.write_text("\n".join(desc_parts) + "\n", encoding="utf-8")
                         parts.append(
                             f"[챌린지] {challenge_dir}\n"
                             f"[등록] {pc['name']}\n"
                             f"카테고리: {pc['category']}\n"
-                            f"설명: {pc.get('description', '')}\n"
-                            f"리모트: {pc.get('remote', '')}"
+                            f"설명: {pc.get('description', '')}"
                         )
                         self._pending_challenge = None
                     else:
