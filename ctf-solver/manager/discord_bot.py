@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -215,14 +216,15 @@ class DiscordIO:
                 except ValueError:
                     pass
 
-            # Handle file attachments — zip → auto-extract to challenges/
+            # Handle file attachments — archives → auto-extract to challenges/
+            ARCHIVE_EXTS = (".zip", ".tar.xz", ".tar.gz", ".tar.bz2", ".tgz", ".tar")
             for attachment in message.attachments:
                 dl_path = f"/tmp/discord_{attachment.filename}"
                 await attachment.save(dl_path)
                 logger.info("Downloaded attachment: %s", attachment.filename)
 
-                if attachment.filename.endswith(".zip"):
-                    # Use pending challenge name if available
+                is_archive = any(attachment.filename.endswith(ext) for ext in ARCHIVE_EXTS)
+                if is_archive:
                     override_name = ""
                     if self._pending_challenge:
                         override_name = self._pending_challenge["name"]
@@ -233,7 +235,6 @@ class DiscordIO:
 
                     if self._pending_challenge:
                         pc = self._pending_challenge
-                        # Save description to challenge directory
                         desc_path = Path(challenge_dir) / "description.md"
                         desc_parts = [f"# {pc['name']}"]
                         if pc.get("category"):
@@ -262,18 +263,34 @@ class DiscordIO:
                 logger.info("Discord message from %s: %s", message.author, combined[:200])
                 await self._message_queue.put(combined)
 
-    def _extract_challenge(self, zip_path: str, filename: str, override_name: str = "") -> str:
-        """Extract zip to challenges/{name}/files/ and return the challenge dir path."""
+    def _extract_challenge(self, archive_path: str, filename: str, override_name: str = "") -> str:
+        """Extract archive to challenges/{name}/files/ and return the challenge dir path."""
         project_root = Path(__file__).parent.parent.parent
-        name = override_name or Path(filename).stem  # strip .zip
+
+        # Strip all archive extensions for name
+        name = override_name
+        if not name:
+            name = filename
+            for ext in (".tar.xz", ".tar.gz", ".tar.bz2", ".tgz", ".tar", ".zip"):
+                if name.endswith(ext):
+                    name = name[:-len(ext)]
+                    break
+
         challenge_dir = project_root / "challenges" / name
         files_dir = challenge_dir / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
 
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(files_dir)
+        if filename.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(files_dir)
+        else:
+            # tar.xz, tar.gz, tar.bz2, tgz, tar
+            subprocess.run(
+                ["tar", "xf", archive_path, "-C", str(files_dir)],
+                check=True,
+            )
 
-        # If zip contains a single top-level directory, flatten it
+        # If archive contains a single top-level directory, flatten it
         entries = list(files_dir.iterdir())
         if len(entries) == 1 and entries[0].is_dir():
             single_dir = entries[0]
