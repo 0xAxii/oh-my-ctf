@@ -37,13 +37,13 @@ _HINT_PREFIX = "[힌트]"
 
 async def _spawn_swarm(challenge_dir: str, category: str, flag_format: str) -> ChallengeSwarm:
     """Run recon then create and return a ChallengeSwarm (not yet started)."""
-    findings, prompt_a, prompt_b = await run_recon(challenge_dir, category)
-    if findings:
-        logger.info("Recon findings (first 300 chars): %s", findings[:300])
+    recon_facts = await run_recon(challenge_dir, category)
+    if recon_facts:
+        logger.info("Recon facts (first 300 chars): %s", recon_facts[:300])
     swarm = ChallengeSwarm(
         challenge_dir=challenge_dir,
-        system_prompt_a=prompt_a,
-        system_prompt_b=prompt_b,
+        recon_facts=recon_facts,
+        category=category,
         flag_format=flag_format or r"(flag|FLAG|DH|CTF|GoN)\{[^}]+\}",
     )
     return swarm
@@ -86,6 +86,16 @@ async def run_interactive(
                         continue
                     except asyncio.QueueEmpty:
                         pass
+
+                # Check if solver needs a tool installed (host-only)
+                try:
+                    tool_req = active_swarm.tool_request_queue.get_nowait()
+                    await write_output(
+                        f"manager> Solver [{tool_req['model']}] 도구 설치 요청: {tool_req['request']}\n"
+                        f"manager> 설치 후 '설치완료' 입력해주세요.\n"
+                    )
+                except asyncio.QueueEmpty:
+                    pass
 
                 # Check if swarm task finished
                 if swarm_task is not None and swarm_task.done():
@@ -174,13 +184,10 @@ async def run_interactive(
                 await active_swarm.message_bus.broadcast(hint_text, source="manager")
                 logger.info("Hint broadcast to solvers: %s", hint_text[:100])
 
-            # TODO: "도구 부족" handling
-            # When solver output contains tool-not-found errors:
-            # 1. Manager asks user for install permission
-            # 2. User approves → install tool (e.g. subprocess.run(["pip", "install", ...]))
-            # 3. Inject a message into the solver's current thread via message_bus to retry
-            #    (same session continuation, NOT a bump/new thread)
-            # This requires steer-or-same-thread support from AppServerSolver.
+            # 3) User confirms tool installation → resume solver on same thread
+            if active_swarm is not None and user_input in ("설치완료", "설치 완료", "installed", "done"):
+                active_swarm.tool_installed_event.set()
+                await write_output("manager> 도구 설치 확인. Solver 재개 중...\n")
 
     except KeyboardInterrupt:
         await write_output("\n중단됨.")
@@ -198,26 +205,52 @@ async def run_direct(challenge_dir: str, category: str = "", flag_format: str = 
     logger.info("Direct mode: %s (category=%s, remote=%s)", challenge_dir, category or "auto", remote or "none")
 
     await write_output(f"Recon 시작: {challenge_dir}")
-    findings, prompt_a, prompt_b = await run_recon(challenge_dir, category)
+    recon_facts = await run_recon(challenge_dir, category)
 
-    if findings:
-        await write_output(f"Recon findings:\n{findings[:500]}")
+    if recon_facts:
+        await write_output(f"Recon facts:\n{recon_facts[:500]}")
 
-    # Inject remote target info into solver prompts
+    # Inject remote target info into recon facts
     if remote:
-        remote_info = f"\n\n## REMOTE TARGET\nThe real flag is on the remote server, NOT in local files.\nRemote: {remote}\nLocal flag files are FAKE. You MUST get the flag from the remote server.\n"
-        prompt_a += remote_info
-        prompt_b += remote_info
+        recon_facts += f"\n\n## REMOTE TARGET\nThe real flag is on the remote server, NOT in local files.\nRemote: {remote}\nLocal flag files are FAKE. You MUST get the flag from the remote server."
 
     swarm = ChallengeSwarm(
         challenge_dir=challenge_dir,
-        system_prompt_a=prompt_a,
-        system_prompt_b=prompt_b,
+        recon_facts=recon_facts,
+        category=category,
         flag_format=flag_format or r"(flag|FLAG|DH|CTF|GoN)\{[^}]+\}",
     )
 
     await write_output("Solver swarm 시작 (5.4 + 5.2 병렬)...")
-    result = await swarm.run()
+
+    # Run swarm with tool-request monitoring for direct mode
+    swarm_task = asyncio.create_task(swarm.run(), name="swarm-direct")
+
+    while not swarm_task.done():
+        # Check for tool installation requests
+        try:
+            tool_req = swarm.tool_request_queue.get_nowait()
+            await write_output(
+                f"\n[!] Solver [{tool_req['model']}] 도구 설치 요청: {tool_req['request']}"
+            )
+            raw = await read_input("설치 후 Enter (또는 '설치완료'): ")
+            swarm.tool_installed_event.set()
+            await write_output("도구 설치 확인. Solver 재개 중...\n")
+        except asyncio.QueueEmpty:
+            pass
+
+        # Brief sleep to avoid busy-wait
+        try:
+            await asyncio.wait_for(asyncio.shield(swarm_task), timeout=2.0)
+            break
+        except asyncio.TimeoutError:
+            continue
+
+    try:
+        result = swarm_task.result()
+    except Exception as e:
+        logger.error("Swarm error: %s", e, exc_info=True)
+        result = None
 
     if result and result.flag:
         await write_output(f"\n FLAG FOUND: {result.flag}")

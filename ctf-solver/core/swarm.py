@@ -42,13 +42,42 @@ def _backoff(bump_count: int) -> float:
     return max(0, delay + jitter)
 
 
+def _build_solver_prompt(model: str, category: str, recon_facts: str) -> str:
+    """Assemble solver prompt: model preamble + category knowledge + recon facts."""
+    from core.recon import _load_category_prompt
+    from pathlib import Path
+
+    parts = []
+
+    # 1. Model-specific preamble
+    cat_dir = Path(__file__).parent.parent / "categories"
+    preamble_name = "preamble_5_4.md" if "5.4" in model else "preamble_5_2.md"
+    preamble_path = cat_dir / preamble_name
+    try:
+        parts.append(preamble_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.warning("Preamble not found: %s", preamble_path)
+
+    # 2. Category knowledge (tools, patterns, pitfalls, rules)
+    if category:
+        cat_prompt = _load_category_prompt(category)
+        if cat_prompt:
+            parts.append(cat_prompt)
+
+    # 3. Recon facts
+    if recon_facts:
+        parts.append(f"## Recon Facts\nThe following facts were gathered by automated recon. Use them — do NOT re-run these checks.\n\n{recon_facts}")
+
+    return "\n\n---\n\n".join(parts)
+
+
 @dataclass
 class ChallengeSwarm:
     """Parallel solvers racing on one challenge."""
 
     challenge_dir: str
-    system_prompt_a: str          # Solver 1 prompt (from Recon)
-    system_prompt_b: str          # Solver 2 prompt (from Recon, different approach)
+    recon_facts: str = ""             # Raw facts from Recon
+    category: str = ""                # Challenge category (pwn/rev/crypto/...)
     flag_format: str = r"(flag|FLAG|DH|CTF|GoN)\{[^}]+\}"
 
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -58,14 +87,21 @@ class ChallengeSwarm:
     winner: SolverResult | None = None
     light_critic: LightCritic | None = None
 
+    # Tool installation flow (host-only, same thread resume)
+    tool_request_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    tool_installed_event: asyncio.Event = field(default_factory=asyncio.Event)
+
     async def run(self) -> SolverResult | None:
         """Run both solvers in parallel. Returns winner's result or None."""
         self.light_critic = LightCritic(challenge_dir=self.challenge_dir, on_flag_found=asyncio.Queue())
         await self.light_critic.start()
 
+        prompt_a = _build_solver_prompt("gpt-5.4", self.category, self.recon_facts)
+        prompt_b = _build_solver_prompt("gpt-5.2", self.category, self.recon_facts)
+
         model_configs = [
-            ("gpt-5.4", "medium", self.system_prompt_a),
-            ("gpt-5.2", "medium", self.system_prompt_b),
+            ("gpt-5.4", "medium", prompt_a),
+            ("gpt-5.2", "medium", prompt_b),
         ]
 
         tasks = [
@@ -178,6 +214,35 @@ class ChallengeSwarm:
                     return result
             else:
                 consecutive_errors = 0
+
+            # NEED_TOOL: resume same thread after installation (no bump)
+            if "NEED_TOOL:" in (result.findings_summary or ""):
+                tool_line = ""
+                for line in result.findings_summary.split("\n"):
+                    if "NEED_TOOL:" in line:
+                        tool_line = line.strip()
+                        break
+                logger.info("[%s] Tool request: %s", model, tool_line)
+                await self.tool_request_queue.put({"model": model, "request": tool_line})
+
+                # Wait for installation (or cancellation)
+                self.tool_installed_event.clear()
+                cancel_task = asyncio.create_task(self.cancel_event.wait())
+                install_task = asyncio.create_task(self.tool_installed_event.wait())
+                done, pending = await asyncio.wait(
+                    [cancel_task, install_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for p in pending:
+                    p.cancel()
+
+                if self.cancel_event.is_set():
+                    return result
+
+                # Resume: same thread, new turn — solver keeps conversation history
+                logger.info("[%s] Tool installed, resuming same thread", model)
+                solver.bump(f"The requested tool has been installed: {tool_line}\nContinue where you left off.")
+                continue  # back to while loop — no bump_count increase, no client destroy
 
             # Bump: fresh session with accumulated findings
             bump_count += 1

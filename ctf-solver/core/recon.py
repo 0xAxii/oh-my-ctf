@@ -1,10 +1,8 @@
-"""Recon — initial challenge exploration + custom solver prompt generation.
+"""Recon — fast fact-gathering for challenge analysis.
 
-Uses GPT-5.4-mini/medium to quickly analyze the challenge,
-then generates tailored prompts for each solver (different approaches).
-Findings are verified by LightCritic before being passed to solvers.
-
-Pattern: D-CIPHER AutoPrompter + blitz Recon/Scout
+Uses GPT-5.4 medium to quickly run checksec/file/strings etc.
+Returns raw facts only — no strategy or solver prompts.
+Solver decides its own approach based on facts + category knowledge.
 """
 
 from __future__ import annotations
@@ -15,55 +13,36 @@ from core.app_server import AppServerClient
 
 logger = logging.getLogger(__name__)
 
-RECON_SYSTEM_PROMPT = """You are a FAST CTF recon agent. Be quick — spend under 60 seconds.
+RECON_SYSTEM_PROMPT = """You are a FAST CTF recon agent. Gather facts only — do NOT plan strategy.
 
-DO NOT read every file. DO NOT do deep analysis. Just:
-1. Run: find . -type f | head -30
-2. Run: file on any binaries
-3. If web: glance at docker-compose.yml and the main app entrypoint only
-4. If binary: run checksec
-5. Identify the challenge TYPE and likely vulnerability in 1-2 sentences
+Spend under 60 seconds. Run these checks and NOTHING else:
 
-After this QUICK look, output THREE things:
+1. `find . -type f | head -40` — list challenge files
+2. `file *` on binaries/executables
+3. If binary: `checksec`, `readelf -h`, `strings | head -50`
+4. If source code: identify language, framework, key entrypoints
+5. If web: glance at docker-compose.yml, identify tech stack and routes
+6. If crypto: identify primitives, parameters, key sizes
 
-## FINDINGS
-List every verified fact you discovered (addresses, protections, vuln type, etc).
-One fact per line. Only facts you confirmed with tool output.
+Output ONE section only:
 
-## SOLVER_PROMPT_A
-Write a detailed starting prompt for Solver A (GPT-5.4).
-This prompt MUST follow GPT-5.4 prompt guidance:
-- Include a <completeness_contract>: "Treat the task as incomplete until all required items are covered. Maintain an internal checklist."
-- Include <tool_persistence_rules>: "Continue tool calls until they materially improve accuracy or completeness. Do not skip prerequisites."
-- Include <verification_loop>: "Before finishing, verify all requirements are met and all claims are backed by tool output."
-- Keep user updates minimal: "Result in 1 sentence + next step in 1 sentence. Do not explain routine tool calls."
-- Encourage parallel independent tool calls where possible.
-- Focus on a STATIC ANALYSIS FIRST approach.
+## RECON_FACTS
+List every verified fact, one per line. Only facts confirmed by tool output.
+Include:
+- File types and structure
+- Binary protections (NX, PIE, canary, RELRO)
+- Language/framework/libraries
+- Key function names and file locations
+- Crypto parameters (key sizes, algorithms, modes)
+- Service ports and protocols
+- Any hardcoded strings, credentials, or interesting constants
+- Challenge category (pwn/rev/crypto/web/forensics/web3/misc/ai)
 
-Include in the prompt:
-- Specific vulnerability identified and where
-- Recommended approach/strategy
-- Key addresses/offsets from recon
-- Which tools to use first
-
-## SOLVER_PROMPT_B
-Write a detailed starting prompt for Solver B (GPT-5.2).
-This prompt MUST follow GPT-5.2 prompt guidance:
-- Leverage 5.2's conservative grounding bias: emphasize explicit reasoning and evidence-based claims.
-- Use structured output specs: overview paragraph + ≤5 tagged bullets (changes, location, risk, next_step, open).
-- Keep verbosity low: 3-6 sentences or ≤5 bullets per update.
-- Include uncertainty handling: "If ambiguous, state assumptions explicitly before proceeding."
-- Focus on a DYNAMIC ANALYSIS FIRST approach (GDB, runtime testing, fuzzing).
-
-Include same recon facts but frame for dynamic-first exploration.
-
-Make the two prompts attack the problem from DIFFERENT angles.
-Both prompts must include:
-- "Write all discoveries to findings_raw.md as you go."
-- "If output exceeds 100 lines, save to file and note key findings only."
-- "Every address/offset MUST come from actual tool output, not from memory."
-- "DO NOT describe what you will do. EXECUTE immediately."
-- "NEVER brute-force passwords, logins, or tokens. NEVER send mass requests or flood the server. Find the vulnerability through code analysis and exploit it surgically."
+Do NOT include:
+- Strategy recommendations
+- Attack suggestions
+- "Next steps" or plans
+- Opinions about difficulty
 """
 
 MAX_RECON_RETRIES = 3
@@ -83,10 +62,11 @@ def _load_category_prompt(category: str) -> str:
 async def run_recon(
     challenge_dir: str,
     category: str = "",
-) -> tuple[str, str, str]:
-    """Run recon via LLM and return (findings, prompt_a, prompt_b).
+) -> str:
+    """Run recon via LLM and return facts string.
 
-    Returns fallback prompts if recon fails or times out.
+    Recon only gathers facts (checksec, file, strings, etc).
+    Strategy is left to the solver.
     """
     for attempt in range(1, MAX_RECON_RETRIES + 1):
         client = AppServerClient()
@@ -119,21 +99,16 @@ async def run_recon(
             if category:
                 prompt = f"Category hint: {category}\n\n" + prompt
 
-            category_knowledge = _load_category_prompt(category) if category else ""
-            if category_knowledge:
-                prompt = f"## Category Knowledge\n{category_knowledge}\n\n{prompt}"
-
             await client.start_turn(thread_id, [{"type": "text", "text": prompt}], effort="medium")
             await turn_done.wait()
 
             full_response = "".join(response_buf)
-            if full_response:
-                findings, prompt_a, prompt_b = _parse_recon_output(full_response)
-                if prompt_a and prompt_b:
-                    logger.info("Recon produced usable prompts (%d chars findings)", len(findings))
-                    return findings, prompt_a, prompt_b
+            facts = _parse_recon_facts(full_response)
+            if facts:
+                logger.info("Recon produced facts (%d chars)", len(facts))
+                return facts
 
-            logger.warning("Recon attempt %d/%d: response didn't produce usable prompts, retrying...", attempt, MAX_RECON_RETRIES)
+            logger.warning("Recon attempt %d/%d: no usable facts, retrying...", attempt, MAX_RECON_RETRIES)
 
         except Exception as e:
             logger.error("Recon attempt %d/%d failed: %s", attempt, MAX_RECON_RETRIES, e)
@@ -143,45 +118,33 @@ async def run_recon(
     raise RuntimeError(f"Recon failed after {MAX_RECON_RETRIES} attempts")
 
 
-def _parse_recon_output(text: str) -> tuple[str, str, str]:
-    """Parse the three sections from recon output."""
-    findings = ""
-    prompt_a = ""
-    prompt_b = ""
+def _parse_recon_facts(text: str) -> str:
+    """Extract RECON_FACTS section from recon output.
 
-    sections = {"FINDINGS": "", "SOLVER_PROMPT_A": "", "SOLVER_PROMPT_B": ""}
+    Falls back to full response if section header not found.
+    """
     current = None
+    facts_lines = []
 
     for line in text.split("\n"):
         stripped = line.strip().upper().replace("#", "").strip()
-        if stripped in sections:
-            current = stripped
+        if stripped == "RECON_FACTS":
+            current = "RECON_FACTS"
             continue
-        if current and current in sections:
-            sections[current] += line + "\n"
+        if current == "RECON_FACTS":
+            # Stop if we hit another section header
+            if stripped and stripped.startswith("##"):
+                break
+            facts_lines.append(line)
 
-    findings = sections["FINDINGS"].strip()
-    prompt_a = sections["SOLVER_PROMPT_A"].strip()
-    prompt_b = sections["SOLVER_PROMPT_B"].strip()
+    facts = "\n".join(facts_lines).strip()
 
-    # Append common anti-termination rules to both prompts
-    anti_term = """
+    # Fallback: if no section found, use the whole response as facts
+    if not facts and text.strip():
+        logger.warning("No RECON_FACTS section found, using full response as facts")
+        facts = text.strip()
 
-## MANDATORY RULES
-- DO NOT describe what you will do. EXECUTE immediately.
-- DO NOT output a plan, summary, or status update. USE TOOLS.
-- You are DONE only when you have captured a valid flag.
-- If a tool fails, try a DIFFERENT tool or approach. Never repeat the same failed command.
-- Every address/offset you use MUST come from actual tool output, not from memory.
-- Write all discoveries to findings_raw.md as you go.
-- If output exceeds 100 lines, save to file and note key findings only.
-"""
-    if prompt_a:
-        prompt_a += anti_term
-    if prompt_b:
-        prompt_b += anti_term
-
-    return findings, prompt_a, prompt_b
+    return facts
 
 
 # Make asyncio available at module level for run_recon
