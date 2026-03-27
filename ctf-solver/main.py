@@ -72,12 +72,8 @@ async def run_interactive(
     # Multi-challenge support: {challenge_name: {swarm, task, flag_queue}}
     active_swarms: dict[str, dict] = {}
 
-    await write_output("CTF Auto-Solver v0.1")
-    await write_output("Manager 초기화 중...")
-
     try:
         await manager.init()
-        await write_output("준비 완료. 챌린지를 알려주세요.\n")
 
         while True:
             # --- Check all active swarms (non-blocking) ---

@@ -252,7 +252,37 @@ class DiscordIO:
                     else:
                         parts.append(f"[챌린지] {challenge_dir} ({attachment.filename})")
                 else:
-                    parts.append(f"[파일] {dl_path} ({attachment.filename})")
+                    # Single file — put in challenges/{stem}/files/
+                    stem = Path(attachment.filename).stem
+                    override_name = ""
+                    if self._pending_challenge:
+                        override_name = self._pending_challenge["name"]
+                    name = override_name or stem
+                    project_root = Path(__file__).parent.parent.parent
+                    challenge_dir = project_root / "challenges" / name
+                    files_dir = challenge_dir / "files"
+                    files_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    shutil.copy2(dl_path, files_dir / attachment.filename)
+
+                    if self._pending_challenge:
+                        pc = self._pending_challenge
+                        desc_path = challenge_dir / "description.md"
+                        desc_parts = [f"# {pc['name']}"]
+                        if pc.get("category"):
+                            desc_parts.append(f"\nCategory: {pc['category']}")
+                        if pc.get("description"):
+                            desc_parts.append(f"\n## Description\n{pc['description']}")
+                        desc_path.write_text("\n".join(desc_parts) + "\n", encoding="utf-8")
+                        parts.append(
+                            f"[챌린지] {challenge_dir}\n"
+                            f"[등록] {pc['name']}\n"
+                            f"카테고리: {pc['category']}\n"
+                            f"설명: {pc.get('description', '')}"
+                        )
+                        self._pending_challenge = None
+                    else:
+                        parts.append(f"[챌린지] {challenge_dir} ({attachment.filename})")
 
             # Combine text + file info into single message
             if text:
