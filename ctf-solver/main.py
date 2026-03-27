@@ -205,14 +205,13 @@ async def run_interactive(
 
             # 1) Spawn swarm if Manager signals start and no swarm running
             if active_swarm is None and any(kw in response for kw in _SPAWN_KEYWORDS):
-                # Extract flag format from Manager response if present
-                import re
-                ff_match = re.search(r"\[FLAG_FORMAT:([^\]]+)\]", response)
-                if ff_match:
-                    flag_format = ff_match.group(1).replace("...", "[^}]+")
-                    # Ensure it's a valid regex pattern
-                    if "{" in flag_format and "}" not in flag_format:
-                        flag_format += "}"
+                # Ask Manager for flag format before starting
+                ff_response = await manager.handle_message(
+                    "flag format이 뭐였지? 접두사만 한 단어로 답해. 예: DH, flag, CTF. 모르면 unknown"
+                )
+                ff_word = ff_response.strip().split()[0].rstrip("{").rstrip(".")
+                if ff_word and ff_word.lower() != "unknown":
+                    flag_format = ff_word + r"\{[^}]+\}"
                     logger.info("Flag format from Manager: %s", flag_format)
 
                 chdir = challenge_dir or "."
