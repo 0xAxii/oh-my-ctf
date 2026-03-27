@@ -115,21 +115,10 @@ class DiscordIO:
                 f"예: `1,http://host.dreamhack.games:12345/`"
             )
 
-        @self.tree.command(name="stop", description="풀이 중단")
-        async def stop_cmd(interaction: discord.Interaction):
-            await self._message_queue.put("중단")
-            await interaction.response.send_message("중단 요청 전달.")
-
         @self.tree.command(name="status", description="현재 풀이 상태 확인")
         async def status_cmd(interaction: discord.Interaction):
             await self._message_queue.put("상태")
             await interaction.response.send_message("상태 확인 중...")
-
-        @self.tree.command(name="hint", description="솔버에게 힌트 전달")
-        @app_commands.describe(text="힌트 내용")
-        async def hint_cmd(interaction: discord.Interaction, text: str):
-            await self._message_queue.put(f"[힌트] {text}")
-            await interaction.response.send_message(f"힌트 전달: {text}")
 
         @self.tree.command(name="clear", description="채널 대화내역 삭제 (채널 복제 방식)")
         async def clear_cmd(interaction: discord.Interaction):
