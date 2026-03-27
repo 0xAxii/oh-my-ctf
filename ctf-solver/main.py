@@ -142,6 +142,23 @@ async def run_interactive(
             if user_input.lower() in ("quit", "exit", "종료"):
                 break
 
+            # Handle /reset — new Manager session
+            if user_input == "[리셋]":
+                if active_swarm:
+                    active_swarm.kill()
+                    active_swarm = None
+                    swarm_task = None
+                    flag_queue = None
+                await manager.destroy()
+                manager = Manager()
+                await manager.init()
+                challenge_dir = ""
+                category = ""
+                flag_format = ""
+                remote = ""
+                await write_output("manager> 새 세션 시작. 챌린지를 알려주세요.\n")
+                continue
+
             # Auto-set challenge_dir from Discord zip upload
             if "[챌린지]" in user_input:
                 for line in user_input.split("\n"):

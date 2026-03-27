@@ -131,6 +131,37 @@ class DiscordIO:
             await self._message_queue.put(f"[힌트] {text}")
             await interaction.response.send_message(f"힌트 전달: {text}")
 
+        @self.tree.command(name="clear", description="채널 대화내역 삭제")
+        async def clear_cmd(interaction: discord.Interaction):
+            await interaction.response.send_message("대화내역 삭제 중...")
+            deleted = await interaction.channel.purge(limit=200)
+            await interaction.channel.send(f"{len(deleted)}개 메시지 삭제 완료.")
+
+        @self.tree.command(name="reset", description="챌린지 디렉토리 초기화 + 매니저 새 세션")
+        async def reset_cmd(interaction: discord.Interaction):
+            self._channel = interaction.channel
+            self.channel_id = interaction.channel_id
+
+            # Clean challenges directory
+            project_root = Path(__file__).parent.parent.parent
+            challenges_dir = project_root / "challenges"
+            import shutil
+            removed = []
+            if challenges_dir.exists():
+                for d in challenges_dir.iterdir():
+                    if d.is_dir():
+                        removed.append(d.name)
+                        shutil.rmtree(d)
+
+            # Signal Manager reset
+            await self._message_queue.put("[리셋]")
+
+            msg = f"초기화 완료."
+            if removed:
+                msg += f" 삭제된 챌린지: {', '.join(removed)}"
+            msg += " 매니저 새 세션 시작."
+            await interaction.response.send_message(msg)
+
     def _setup_handlers(self) -> None:
         @self.client.event
         async def on_ready():
