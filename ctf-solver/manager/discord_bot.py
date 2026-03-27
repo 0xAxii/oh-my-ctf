@@ -53,15 +53,15 @@ class DiscordIO:
         @self.tree.command(name="challenge", description="챌린지 등록 (파일은 메시지로 첨부)")
         @app_commands.describe(
             name="문제 이름",
-            category="카테고리 (pwn/rev/crypto/web/forensics/web3/misc/ai)",
             description="문제 설명",
-            remote="원격 서버 주소 (선택, 예: host:port)",
+            category="카테고리 (pwn/rev/crypto/web/forensics/web3/misc/ai)",
+            remote="원격 서버 주소 (예: host:port)",
         )
         async def challenge_cmd(
             interaction: discord.Interaction,
             name: str,
-            category: str,
-            description: str = "",
+            description: str,
+            category: str = "",
             remote: str = "",
         ):
             self._channel = interaction.channel
@@ -105,8 +105,11 @@ class DiscordIO:
         @self.client.event
         async def on_ready():
             logger.info("Discord bot connected as %s", self.client.user)
-            await self.tree.sync()
-            logger.info("Slash commands synced")
+            # Sync to each guild for instant availability
+            for guild in self.client.guilds:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info("Slash commands synced to %s", guild.name)
             if self.channel_id:
                 self._channel = self.client.get_channel(self.channel_id)
             self._ready.set()
@@ -148,6 +151,16 @@ class DiscordIO:
 
                     if self._pending_challenge:
                         pc = self._pending_challenge
+                        # Save description to challenge directory
+                        desc_path = Path(challenge_dir) / "description.md"
+                        desc_parts = [f"# {pc['name']}"]
+                        if pc.get("category"):
+                            desc_parts.append(f"\nCategory: {pc['category']}")
+                        if pc.get("description"):
+                            desc_parts.append(f"\n## Description\n{pc['description']}")
+                        if pc.get("remote"):
+                            desc_parts.append(f"\n## Remote\n{pc['remote']}")
+                        desc_path.write_text("\n".join(desc_parts) + "\n", encoding="utf-8")
                         parts.append(
                             f"[챌린지] {challenge_dir}\n"
                             f"[등록] {pc['name']}\n"
@@ -171,25 +184,26 @@ class DiscordIO:
                 await self._message_queue.put(combined)
 
     def _extract_challenge(self, zip_path: str, filename: str, override_name: str = "") -> str:
-        """Extract zip to challenges/{name}/ and return the path."""
+        """Extract zip to challenges/{name}/files/ and return the challenge dir path."""
         project_root = Path(__file__).parent.parent.parent
         name = override_name or Path(filename).stem  # strip .zip
         challenge_dir = project_root / "challenges" / name
-        challenge_dir.mkdir(parents=True, exist_ok=True)
+        files_dir = challenge_dir / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(challenge_dir)
+            zf.extractall(files_dir)
 
         # If zip contains a single top-level directory, flatten it
-        entries = list(challenge_dir.iterdir())
+        entries = list(files_dir.iterdir())
         if len(entries) == 1 and entries[0].is_dir():
             single_dir = entries[0]
             for item in single_dir.iterdir():
-                item.rename(challenge_dir / item.name)
+                item.rename(files_dir / item.name)
             single_dir.rmdir()
 
-        file_count = sum(1 for _ in challenge_dir.rglob("*") if _.is_file())
-        logger.info("Extracted %s → %s (%d files)", filename, challenge_dir, file_count)
+        file_count = sum(1 for _ in files_dir.rglob("*") if _.is_file())
+        logger.info("Extracted %s → %s (%d files)", filename, files_dir, file_count)
         return str(challenge_dir)
 
     async def start(self) -> None:
