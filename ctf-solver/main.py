@@ -163,7 +163,9 @@ async def run_interactive(
             # Parse /solve command — directly spawn swarm
             if user_input.startswith("풀이 시작") and active_swarm is None:
                 for line in user_input.split("\n"):
-                    if "문제:" in line:
+                    if "경로:" in line:
+                        challenge_dir = line.split(":", 1)[1].strip()
+                    elif "문제:" in line:
                         solve_name = line.split(":", 1)[1].strip()
                         solve_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "challenges", solve_name)
                         if os.path.isdir(solve_dir):

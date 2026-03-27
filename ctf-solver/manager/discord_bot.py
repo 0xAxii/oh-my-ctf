@@ -45,6 +45,7 @@ class DiscordIO:
         self._ready = asyncio.Event()
         self._bot_task: asyncio.Task | None = None
         self._pending_challenge: dict | None = None  # waiting for zip upload
+        self._challenge_list: list[str] = []       # /solve listing for number selection
 
         self._setup_handlers()
         self._setup_commands()
@@ -78,23 +79,30 @@ class DiscordIO:
                 f"챌린지 `{name}` ({category}) 등록. zip 파일을 올려주세요."
             )
 
-        @self.tree.command(name="solve", description="챌린지 풀이 시작")
-        @app_commands.describe(
-            name="문제 이름 (challenges/ 하위 디렉토리명)",
-            remote="원격 서버 주소 (예: host:port)",
-        )
-        async def solve_cmd(
-            interaction: discord.Interaction,
-            name: str,
-            remote: str = "",
-        ):
+        @self.tree.command(name="solve", description="챌린지 풀이 시작 — 목록에서 번호로 선택")
+        async def solve_cmd(interaction: discord.Interaction):
             self._channel = interaction.channel
             self.channel_id = interaction.channel_id
-            msg = f"풀이 시작\n문제: {name}"
-            if remote:
-                msg += f"\n리모트: {remote}"
-            await self._message_queue.put(msg)
-            await interaction.response.send_message(f"`{name}` 풀이 시작합니다." + (f" (remote: {remote})" if remote else ""))
+
+            # List available challenges
+            project_root = Path(__file__).parent.parent.parent
+            challenges_dir = project_root / "challenges"
+            if not challenges_dir.exists():
+                await interaction.response.send_message("challenges/ 디렉토리가 없습니다.")
+                return
+
+            dirs = sorted([d.name for d in challenges_dir.iterdir() if d.is_dir()])
+            if not dirs:
+                await interaction.response.send_message("등록된 챌린지가 없습니다. /challenge로 먼저 등록하세요.")
+                return
+
+            listing = "\n".join(f"`{i+1}` — {name}" for i, name in enumerate(dirs))
+            self._challenge_list = dirs
+            await interaction.response.send_message(
+                f"**챌린지 목록:**\n{listing}\n\n"
+                f"번호를 입력하세요. 원격 서버가 있으면 쉼표 뒤에 붙여주세요.\n"
+                f"예: `1,http://host.dreamhack.games:12345/`"
+            )
 
         @self.tree.command(name="stop", description="풀이 중단")
         async def stop_cmd(interaction: discord.Interaction):
@@ -143,6 +151,26 @@ class DiscordIO:
 
             text = message.content.strip()
             parts = []
+
+            # Handle /solve number selection (e.g. "1,http://host:port/")
+            if self._challenge_list and text and text[0].isdigit():
+                split = text.split(",", 1)
+                try:
+                    idx = int(split[0].strip()) - 1
+                    if 0 <= idx < len(self._challenge_list):
+                        chosen = self._challenge_list[idx]
+                        remote_info = split[1].strip() if len(split) > 1 else ""
+                        project_root = Path(__file__).parent.parent.parent
+                        challenge_dir = str(project_root / "challenges" / chosen)
+                        msg = f"풀이 시작\n문제: {chosen}\n경로: {challenge_dir}"
+                        if remote_info:
+                            msg += f"\n리모트: {remote_info}"
+                        self._challenge_list = []
+                        await self._message_queue.put(msg)
+                        await message.channel.send(f"`{chosen}` 풀이 시작." + (f" (remote: {remote_info})" if remote_info else ""))
+                        return
+                except ValueError:
+                    pass
 
             # Handle file attachments — zip → auto-extract to challenges/
             for attachment in message.attachments:
