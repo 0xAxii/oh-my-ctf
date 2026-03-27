@@ -69,7 +69,7 @@ class Manager:
 
         await self.client.start_turn(self.thread_id, [
             {"type": "text", "text": MANAGER_SYSTEM_PROMPT + "\n\n초기화 완료. 사용자 메시지를 기다립니다."}
-        ], sandbox="none")
+        ], sandbox="readOnly")
         await asyncio.wait_for(done.wait(), timeout=30)
         self._ready = True
         logger.info("Manager initialized")
@@ -98,7 +98,7 @@ class Manager:
 
         await self.client.start_turn(self.thread_id, [
             {"type": "text", "text": prompt}
-        ], sandbox="none")
+        ], sandbox="readOnly")
 
         try:
             await asyncio.wait_for(done.wait(), timeout=60)
