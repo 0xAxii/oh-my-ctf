@@ -205,7 +205,16 @@ async def run_interactive(
 
             # 1) Spawn swarm if Manager signals start and no swarm running
             if active_swarm is None and any(kw in response for kw in _SPAWN_KEYWORDS):
-                # Use challenge_dir from CLI arg or fall back to current dir
+                # Extract flag format from Manager response if present
+                import re
+                ff_match = re.search(r"\[FLAG_FORMAT:([^\]]+)\]", response)
+                if ff_match:
+                    flag_format = ff_match.group(1).replace("...", "[^}]+")
+                    # Ensure it's a valid regex pattern
+                    if "{" in flag_format and "}" not in flag_format:
+                        flag_format += "}"
+                    logger.info("Flag format from Manager: %s", flag_format)
+
                 chdir = challenge_dir or "."
                 await write_output("manager> Recon 시작 중...\n")
                 try:

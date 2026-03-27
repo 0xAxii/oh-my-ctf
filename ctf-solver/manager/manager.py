@@ -28,6 +28,8 @@ Your responsibilities:
 - Relay progress from solvers to the user
 - Pass user hints to solvers
 - Report flag discoveries
+- Remember the flag format when the user tells you (e.g. "DH format", "flag{} format")
+- When you signal "풀이 시작", include the flag format if known: [FLAG_FORMAT:DH{...}]
 
 Keep responses concise (1-3 sentences).
 """
