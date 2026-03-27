@@ -69,10 +69,8 @@ async def run_interactive(
     """Main interactive loop — Manager talks to user, spawns and monitors swarm."""
     manager = Manager()
     remote = ""
-    active_swarm: ChallengeSwarm | None = None
-    swarm_task: asyncio.Task | None = None
-    # flag_queue is set on the swarm's LightCritic; we keep a reference here
-    flag_queue: asyncio.Queue | None = None
+    # Multi-challenge support: {challenge_name: {swarm, task, flag_queue}}
+    active_swarms: dict[str, dict] = {}
 
     await write_output("CTF Auto-Solver v0.1")
     await write_output("Manager 초기화 중...")
@@ -82,53 +80,54 @@ async def run_interactive(
         await write_output("준비 완료. 챌린지를 알려주세요.\n")
 
         while True:
-            # --- Check swarm status (non-blocking) ---
-            if active_swarm:
-                status = active_swarm.get_status()
+            # --- Check all active swarms (non-blocking) ---
+            finished = []
+            for name, info in active_swarms.items():
+                swarm = info["swarm"]
+                task = info["task"]
+                fq = info["flag_queue"]
 
-                # Check if LightCritic already found a verified flag
-                if flag_queue is not None:
+                # Check if LightCritic found a verified flag
+                if fq is not None:
                     try:
-                        flag = flag_queue.get_nowait()
-                        msg = await manager.report_event("FLAG_FOUND", flag)
+                        flag = fq.get_nowait()
+                        msg = await manager.report_event("FLAG_FOUND", f"{name}: {flag}")
                         await write_output(f"manager> {msg}\n")
-                        active_swarm.kill()
-                        active_swarm = None
-                        swarm_task = None
-                        flag_queue = None
+                        swarm.kill()
+                        finished.append(name)
                         continue
                     except asyncio.QueueEmpty:
                         pass
 
-                # Check if solver needs a tool installed (host-only)
+                # Check tool installation requests
                 try:
-                    tool_req = active_swarm.tool_request_queue.get_nowait()
+                    tool_req = swarm.tool_request_queue.get_nowait()
                     await write_output(
-                        f"manager> Solver [{tool_req['model']}] 도구 설치 요청: {tool_req['request']}\n"
+                        f"manager> [{name}] Solver [{tool_req['model']}] 도구 설치 요청: {tool_req['request']}\n"
                         f"manager> 설치 후 '설치완료' 입력해주세요.\n"
                     )
                 except asyncio.QueueEmpty:
                     pass
 
                 # Check if swarm task finished
-                if swarm_task is not None and swarm_task.done():
+                if task is not None and task.done():
                     try:
-                        result = swarm_task.result()
+                        result = task.result()
                     except Exception as e:
-                        logger.error("Swarm task raised: %s", e, exc_info=True)
+                        logger.error("[%s] Swarm task raised: %s", name, e, exc_info=True)
                         result = None
 
                     if result and result.flag:
-                        msg = await manager.report_event("FLAG_FOUND", result.flag)
+                        msg = await manager.report_event("FLAG_FOUND", f"{name}: {result.flag}")
                         await write_output(f"manager> {msg}\n")
                     else:
                         summary = result.findings_summary[:200] if result else ""
-                        msg = await manager.report_event("SWARM_DONE_NO_FLAG", summary)
+                        msg = await manager.report_event("SWARM_DONE_NO_FLAG", f"{name}: {summary}")
                         await write_output(f"manager> {msg}\n")
+                    finished.append(name)
 
-                    active_swarm = None
-                    swarm_task = None
-                    flag_queue = None
+            for name in finished:
+                active_swarms.pop(name, None)
 
             # --- Read user input with timeout so we can keep polling swarm ---
             try:
@@ -144,11 +143,9 @@ async def run_interactive(
 
             # Handle /reset — new Manager session
             if user_input == "[리셋]":
-                if active_swarm:
-                    active_swarm.kill()
-                    active_swarm = None
-                    swarm_task = None
-                    flag_queue = None
+                for info in active_swarms.values():
+                    info["swarm"].kill()
+                active_swarms.clear()
                 await manager.destroy()
                 manager = Manager()
                 await manager.init()
@@ -178,7 +175,7 @@ async def run_interactive(
                         remote = line.split(":", 1)[1].strip()
 
             # Parse /solve command — set challenge_dir, let Manager decide
-            if user_input.startswith("풀이 시작") and active_swarm is None:
+            if user_input.startswith("풀이 시작"):
                 for line in user_input.split("\n"):
                     if "경로:" in line:
                         challenge_dir = line.split(":", 1)[1].strip()
@@ -203,79 +200,93 @@ async def run_interactive(
 
             # Build context string for Manager
             context = ""
-            if active_swarm:
-                st = active_swarm.get_status()
-                solvers_info = ", ".join(
-                    f"{m}: {d['findings'][:80]}" for m, d in st["solvers"].items() if d["findings"]
-                )
-                context = (
-                    f"현재 활성 swarm 실행 중. 챌린지: {st['challenge']}. "
-                    f"취소됨: {st['cancelled']}. "
-                    f"Winner: {st['winner']}. "
-                    + (f"Solver 진행 상황: {solvers_info}" if solvers_info else "")
-                )
+            if active_swarms:
+                parts = []
+                for sname, sinfo in active_swarms.items():
+                    st = sinfo["swarm"].get_status()
+                    solvers_info = ", ".join(
+                        f"{m}: {d['findings'][:80]}" for m, d in st["solvers"].items() if d["findings"]
+                    )
+                    parts.append(f"[{sname}] winner={st['winner']}" + (f" ({solvers_info})" if solvers_info else ""))
+                context = f"활성 풀이 {len(active_swarms)}개: " + "; ".join(parts)
 
             response = await manager.handle_message(user_input, context=context)
             await write_output(f"manager> {response}\n")
 
             # --- Interpret Manager response for action hooks ---
 
-            # 1) Spawn swarm if Manager signals start and no swarm running
-            if active_swarm is None and any(kw in response for kw in _SPAWN_KEYWORDS):
-                # Ask Manager for flag format before starting
-                ff_response = await manager.handle_message(
-                    "flag format이 뭐였지? 접두사만 한 단어로 답해. 예: DH, flag, CTF. 모르면 unknown"
-                )
-                ff_word = ff_response.strip().split()[0].rstrip("{").rstrip(".")
-                if ff_word and ff_word.lower() != "unknown":
-                    flag_format = ff_word + r"\{[^}]+\}"
-                    logger.info("Flag format from Manager: %s", flag_format)
+            # 1) Spawn swarm if Manager signals start
+            if any(kw in response for kw in _SPAWN_KEYWORDS) and challenge_dir:
+                chal_name = os.path.basename(challenge_dir)
+                MAX_CONCURRENT = 5
+                if chal_name in active_swarms:
+                    pass  # already running
+                elif len(active_swarms) >= MAX_CONCURRENT:
+                    await write_output(f"manager> 동시 풀이 {MAX_CONCURRENT}개 제한 초과. 기존 풀이가 끝나길 기다려주세요.\n")
+                else:
+                    # Hardware check for 2nd+ concurrent swarm
+                    if len(active_swarms) >= 1:
+                        import shutil, psutil
+                        cpu_pct = psutil.cpu_percent(interval=1)
+                        mem = psutil.virtual_memory()
+                        hw_msg = f"현재 CPU {cpu_pct}%, 메모리 {mem.percent}% ({mem.available // (1024**3)}GB 여유). 동시 풀이 {len(active_swarms)+1}개 진행할까요?"
+                        hw_response = await manager.handle_message(
+                            f"[시스템] {hw_msg}\n사용자에게 하드웨어 상태를 알려주고, 진행 여부를 확인해주세요."
+                        )
+                        await write_output(f"manager> {hw_response}\n")
+                        # Wait for user confirmation
+                        try:
+                            confirm = await asyncio.wait_for(read_input(""), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            await write_output("manager> 시간 초과. 풀이 취소.\n")
+                            continue
+                        if confirm.strip() not in ("ㅇㅇ", "ㅇ", "응", "yes", "y", "확인", "진행"):
+                            await write_output("manager> 풀이 취소.\n")
+                            continue
 
-                chdir = challenge_dir or "."
-                await write_output("manager> Recon 시작 중...\n")
-                try:
-                    active_swarm = await _spawn_swarm(chdir, category, flag_format)
-                    # Grab the flag queue from LightCritic after swarm.run() sets it up
-                    # (run() creates LightCritic internally; we set up our own queue here
-                    #  and pass it in so we can monitor it)
-                    flag_queue = asyncio.Queue()
-                    active_swarm.light_critic = LightCritic(
-                        challenge_dir=chdir,
-                        on_flag_found=flag_queue,
+                    # Ask Manager for flag format
+                    ff_response = await manager.handle_message(
+                        "flag format이 뭐였지? 접두사만 한 단어로 답해. 예: DH, flag, CTF. 모르면 unknown"
                     )
-                    swarm_task = asyncio.create_task(
-                        active_swarm.run(), name="swarm"
-                    )
-                    start_msg = await manager.report_event(
-                        "SWARM_STARTED",
-                        f"challenge_dir={chdir}, category={category or 'auto'}",
-                    )
-                    await write_output(f"manager> {start_msg}\n")
-                except Exception as e:
-                    logger.error("Failed to spawn swarm: %s", e, exc_info=True)
-                    err_msg = await manager.report_event("SWARM_START_ERROR", str(e))
-                    await write_output(f"manager> {err_msg}\n")
+                    ff_word = ff_response.strip().split()[0].rstrip("{").rstrip(".")
+                    if ff_word and ff_word.lower() != "unknown":
+                        flag_format = ff_word + r"\{[^}]+\}"
+                        logger.info("Flag format from Manager: %s", flag_format)
 
-            # 2) Relay user hint to solvers via MessageBus broadcast
-            elif active_swarm is not None and _HINT_PREFIX in response:
-                # Manager decided the user sent a hint — broadcast it
+                    chdir = os.path.join(challenge_dir, "files") if os.path.isdir(os.path.join(challenge_dir, "files")) else challenge_dir
+                    await write_output(f"manager> {chal_name} Recon 시작 중...\n")
+                    try:
+                        swarm = await _spawn_swarm(chdir, category, flag_format)
+                        fq = asyncio.Queue()
+                        swarm.light_critic = LightCritic(challenge_dir=chdir, on_flag_found=fq)
+                        task = asyncio.create_task(swarm.run(), name=f"swarm-{chal_name}")
+                        active_swarms[chal_name] = {"swarm": swarm, "task": task, "flag_queue": fq}
+                        await write_output(f"manager> {chal_name} 풀이 시작 (category={category or 'auto'})\n")
+                    except Exception as e:
+                        logger.error("Failed to spawn swarm for %s: %s", chal_name, e, exc_info=True)
+                        await write_output(f"manager> {chal_name} 시작 실패: {e}\n")
+
+            # 2) Relay user hint to all active solvers via MessageBus
+            if _HINT_PREFIX in response and active_swarms:
                 hint_start = response.find(_HINT_PREFIX) + len(_HINT_PREFIX)
                 hint_text = response[hint_start:].strip()
-                await active_swarm.message_bus.broadcast(hint_text, source="manager")
-                logger.info("Hint broadcast to solvers: %s", hint_text[:100])
+                for sinfo in active_swarms.values():
+                    await sinfo["swarm"].message_bus.broadcast(hint_text, source="manager")
+                logger.info("Hint broadcast to %d swarms: %s", len(active_swarms), hint_text[:100])
 
-            # 3) User confirms tool installation → resume solver on same thread
-            if active_swarm is not None and user_input in ("설치완료", "설치 완료", "installed", "done"):
-                active_swarm.tool_installed_event.set()
+            # 3) User confirms tool installation → resume all waiting solvers
+            if user_input in ("설치완료", "설치 완료", "installed", "done") and active_swarms:
+                for sinfo in active_swarms.values():
+                    sinfo["swarm"].tool_installed_event.set()
                 await write_output("manager> 도구 설치 확인. Solver 재개 중...\n")
 
     except KeyboardInterrupt:
         await write_output("\n중단됨.")
     finally:
-        if active_swarm:
-            active_swarm.kill()
-        if swarm_task and not swarm_task.done():
-            swarm_task.cancel()
+        for sinfo in active_swarms.values():
+            sinfo["swarm"].kill()
+            if sinfo["task"] and not sinfo["task"].done():
+                sinfo["task"].cancel()
             await asyncio.gather(swarm_task, return_exceptions=True)
         await manager.destroy()
 
