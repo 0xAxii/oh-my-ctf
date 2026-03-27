@@ -160,6 +160,42 @@ async def run_interactive(
                     if "리모트:" in line:
                         remote = line.split(":", 1)[1].strip()
 
+            # Parse /solve command — directly spawn swarm
+            if user_input.startswith("풀이 시작") and active_swarm is None:
+                for line in user_input.split("\n"):
+                    if "문제:" in line:
+                        solve_name = line.split(":", 1)[1].strip()
+                        solve_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "challenges", solve_name)
+                        if os.path.isdir(solve_dir):
+                            challenge_dir = solve_dir
+                    if "리모트:" in line:
+                        remote = line.split(":", 1)[1].strip()
+
+                # Read description.md for category if not set
+                desc_path = os.path.join(challenge_dir, "description.md") if challenge_dir else ""
+                if desc_path and os.path.exists(desc_path) and not category:
+                    desc = open(desc_path).read()
+                    for dl in desc.split("\n"):
+                        if dl.startswith("Category:"):
+                            category = dl.split(":", 1)[1].strip()
+                            break
+
+                if challenge_dir:
+                    chdir = os.path.join(challenge_dir, "files") if os.path.isdir(os.path.join(challenge_dir, "files")) else challenge_dir
+                    await write_output(f"manager> {os.path.basename(challenge_dir)} 풀이 시작 (category={category or 'auto'}, remote={remote or 'none'})\n")
+                    await write_output("manager> Recon 시작 중...\n")
+                    try:
+                        active_swarm = await _spawn_swarm(chdir, category, flag_format)
+                        flag_queue = asyncio.Queue()
+                        active_swarm.light_critic = LightCritic(challenge_dir=chdir, on_flag_found=flag_queue)
+                        swarm_task = asyncio.create_task(active_swarm.run(), name="swarm")
+                    except Exception as e:
+                        logger.error("Failed to spawn swarm: %s", e, exc_info=True)
+                        await write_output(f"manager> 시작 실패: {e}\n")
+                else:
+                    await write_output("manager> 챌린지 디렉토리를 찾을 수 없습니다.\n")
+                continue
+
             # Build context string for Manager
             context = ""
             if active_swarm:

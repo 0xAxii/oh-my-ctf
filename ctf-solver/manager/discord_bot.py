@@ -78,12 +78,23 @@ class DiscordIO:
                 f"챌린지 `{name}` ({category}) 등록. zip 파일을 올려주세요."
             )
 
-        @self.tree.command(name="solve", description="등록된 챌린지 풀이 시작")
-        async def solve_cmd(interaction: discord.Interaction):
+        @self.tree.command(name="solve", description="챌린지 풀이 시작")
+        @app_commands.describe(
+            name="문제 이름 (challenges/ 하위 디렉토리명)",
+            remote="원격 서버 주소 (예: host:port)",
+        )
+        async def solve_cmd(
+            interaction: discord.Interaction,
+            name: str,
+            remote: str = "",
+        ):
             self._channel = interaction.channel
             self.channel_id = interaction.channel_id
-            await self._message_queue.put("풀이 시작")
-            await interaction.response.send_message("풀이 시작합니다.")
+            msg = f"풀이 시작\n문제: {name}"
+            if remote:
+                msg += f"\n리모트: {remote}"
+            await self._message_queue.put(msg)
+            await interaction.response.send_message(f"`{name}` 풀이 시작합니다." + (f" (remote: {remote})" if remote else ""))
 
         @self.tree.command(name="stop", description="풀이 중단")
         async def stop_cmd(interaction: discord.Interaction):
