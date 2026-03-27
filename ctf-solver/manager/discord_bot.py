@@ -121,15 +121,21 @@ class DiscordIO:
             await self._message_queue.put("상태")
             await interaction.response.send_message("상태 확인 중...")
 
-        @self.tree.command(name="clear", description="채널 대화내역 삭제 (채널 복제 방식)")
+        @self.tree.command(name="clear", description="채널 대화내역 삭제")
         async def clear_cmd(interaction: discord.Interaction):
-            await interaction.response.send_message("채널 초기화 중...")
-            old_channel = interaction.channel
-            new_channel = await old_channel.clone(reason="CTF Manager /clear")
-            await old_channel.delete(reason="CTF Manager /clear")
-            self._channel = new_channel
-            self.channel_id = new_channel.id
-            await new_channel.send("채널 초기화 완료.")
+            await interaction.response.send_message("채널 초기화 중...", ephemeral=True)
+            try:
+                # Try clone+delete (needs Manage Channels)
+                old_channel = interaction.channel
+                new_channel = await old_channel.clone(reason="CTF Manager /clear")
+                await old_channel.delete(reason="CTF Manager /clear")
+                self._channel = new_channel
+                self.channel_id = new_channel.id
+                await new_channel.send("채널 초기화 완료.")
+            except discord.Forbidden:
+                # Fallback: purge (needs Manage Messages)
+                deleted = await interaction.channel.purge(limit=200)
+                await interaction.channel.send(f"{len(deleted)}개 메시지 삭제.")
 
         @self.tree.command(name="reset", description="챌린지 디렉토리 초기화 + 매니저 새 세션")
         async def reset_cmd(interaction: discord.Interaction):
