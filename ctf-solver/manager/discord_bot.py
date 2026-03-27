@@ -44,6 +44,7 @@ class DiscordIO:
         self._message_queue: asyncio.Queue[str] = asyncio.Queue()
         self._ready = asyncio.Event()
         self._bot_task: asyncio.Task | None = None
+        self._pending_challenge: dict | None = None  # waiting for zip upload
 
         self._setup_handlers()
         self._setup_commands()
@@ -66,16 +67,16 @@ class DiscordIO:
             self._channel = interaction.channel
             self.channel_id = interaction.channel_id
 
-            parts = [f"[등록] {name}"]
-            parts.append(f"카테고리: {category}")
-            if description:
-                parts.append(f"설명: {description}")
-            if remote:
-                parts.append(f"리모트: {remote}")
+            self._pending_challenge = {
+                "name": name,
+                "category": category,
+                "description": description,
+                "remote": remote,
+            }
 
-            combined = "\n".join(parts)
-            await self._message_queue.put(combined)
-            await interaction.response.send_message(f"챌린지 `{name}` ({category}) 등록 완료. 파일은 이 채널에 zip으로 올려주세요.")
+            await interaction.response.send_message(
+                f"챌린지 `{name}` ({category}) 등록. zip 파일을 올려주세요."
+            )
 
         @self.tree.command(name="solve", description="등록된 챌린지 풀이 시작")
         async def solve_cmd(interaction: discord.Interaction):
@@ -136,8 +137,27 @@ class DiscordIO:
                 logger.info("Downloaded attachment: %s", attachment.filename)
 
                 if attachment.filename.endswith(".zip"):
-                    challenge_dir = self._extract_challenge(dl_path, attachment.filename)
-                    parts.append(f"[챌린지] {challenge_dir} ({attachment.filename})")
+                    # Use pending challenge name if available
+                    override_name = ""
+                    if self._pending_challenge:
+                        override_name = self._pending_challenge["name"]
+
+                    challenge_dir = self._extract_challenge(
+                        dl_path, attachment.filename, override_name=override_name,
+                    )
+
+                    if self._pending_challenge:
+                        pc = self._pending_challenge
+                        parts.append(
+                            f"[챌린지] {challenge_dir}\n"
+                            f"[등록] {pc['name']}\n"
+                            f"카테고리: {pc['category']}\n"
+                            f"설명: {pc.get('description', '')}\n"
+                            f"리모트: {pc.get('remote', '')}"
+                        )
+                        self._pending_challenge = None
+                    else:
+                        parts.append(f"[챌린지] {challenge_dir} ({attachment.filename})")
                 else:
                     parts.append(f"[파일] {dl_path} ({attachment.filename})")
 
@@ -150,10 +170,10 @@ class DiscordIO:
                 logger.info("Discord message from %s: %s", message.author, combined[:200])
                 await self._message_queue.put(combined)
 
-    def _extract_challenge(self, zip_path: str, filename: str) -> str:
+    def _extract_challenge(self, zip_path: str, filename: str, override_name: str = "") -> str:
         """Extract zip to challenges/{name}/ and return the path."""
         project_root = Path(__file__).parent.parent.parent
-        name = Path(filename).stem  # strip .zip
+        name = override_name or Path(filename).stem  # strip .zip
         challenge_dir = project_root / "challenges" / name
         challenge_dir.mkdir(parents=True, exist_ok=True)
 
