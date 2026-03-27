@@ -70,24 +70,28 @@ class DiscordIO:
                 return
 
             text = message.content.strip()
-            if text:
-                logger.info("Discord message from %s: %s", message.author, text[:100])
-                await self._message_queue.put(text)
+            parts = []
 
             # Handle file attachments — zip → auto-extract to challenges/
             for attachment in message.attachments:
                 dl_path = f"/tmp/discord_{attachment.filename}"
                 await attachment.save(dl_path)
+                logger.info("Downloaded attachment: %s", attachment.filename)
 
                 if attachment.filename.endswith(".zip"):
                     challenge_dir = self._extract_challenge(dl_path, attachment.filename)
-                    await self._message_queue.put(
-                        f"[챌린지] {challenge_dir} ({attachment.filename})"
-                    )
+                    parts.append(f"[챌린지] {challenge_dir} ({attachment.filename})")
                 else:
-                    await self._message_queue.put(f"[파일] {dl_path} ({attachment.filename})")
+                    parts.append(f"[파일] {dl_path} ({attachment.filename})")
 
-                logger.info("Downloaded attachment: %s", attachment.filename)
+            # Combine text + file info into single message
+            if text:
+                parts.insert(0, text)
+
+            if parts:
+                combined = "\n".join(parts)
+                logger.info("Discord message from %s: %s", message.author, combined[:200])
+                await self._message_queue.put(combined)
 
     def _extract_challenge(self, zip_path: str, filename: str) -> str:
         """Extract zip to challenges/{name}/ and return the path."""
