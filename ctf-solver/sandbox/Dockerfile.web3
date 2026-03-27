@@ -1,0 +1,10 @@
+FROM ctf-base:latest
+
+RUN pip3 install --no-cache-dir slither-analyzer || true
+# mythril has dependency conflicts — install manually if needed
+# RUN pip3 install --no-cache-dir mythril
+
+# Foundry (forge/cast/anvil)
+RUN curl -L https://foundry.paradigm.xyz | bash \
+    && /root/.foundry/bin/foundryup || true
+ENV PATH="/root/.foundry/bin:$PATH"

@@ -1,0 +1,19 @@
+FROM ctf-base:latest
+
+RUN apt-get update && apt-get install -y \
+    gdb gdb-multiarch \
+    ltrace strace \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir \
+    angr \
+    capstone \
+    unicorn \
+    z3-solver \
+    frida-tools \
+    pyghidra
+
+# radare2
+RUN git clone --depth=1 https://github.com/radareorg/radare2 /tmp/r2 \
+    && cd /tmp/r2 && bash sys/install.sh --install \
+    && ldconfig && rm -rf /tmp/r2

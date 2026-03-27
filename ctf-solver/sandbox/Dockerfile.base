@@ -1,0 +1,38 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TERM=xterm
+
+RUN apt-get update && apt-get install -y \
+    # Networking
+    netcat-openbsd curl wget nmap \
+    # Binary analysis
+    binutils file xxd bsdmainutils binwalk \
+    # Build tools
+    gcc g++ make cmake \
+    # Python
+    python3 python3-pip python3-dev \
+    # Ruby (for zsteg)
+    ruby ruby-dev \
+    # Java (for Ghidra headless)
+    default-jre-headless \
+    # Crypto libs
+    openssl libssl-dev libgmp-dev libmpfr-dev libfplll-dev libeigen3-dev libz3-dev \
+    # Misc
+    git jq zip unzip ca-certificates ncurses-term \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:/root/.local/bin:$PATH"
+
+# Base Python libs
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip3 install --no-cache-dir \
+    requests \
+    Pillow \
+    numpy \
+    scipy \
+    tqdm
+
+WORKDIR /challenge

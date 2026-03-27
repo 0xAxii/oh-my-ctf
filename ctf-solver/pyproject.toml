@@ -1,0 +1,10 @@
+[project]
+name = "ctf-solver"
+version = "0.1.0"
+description = "Autonomous CTF solver with parallel model racing"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

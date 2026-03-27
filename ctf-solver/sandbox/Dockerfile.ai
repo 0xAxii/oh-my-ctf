@@ -1,0 +1,7 @@
+FROM ctf-base:latest
+
+# torch는 용량+호환성 문제로 제외. 필요 시 컨테이너 안에서 수동 설치
+RUN pip3 install --no-cache-dir \
+    transformers \
+    openai \
+    tiktoken

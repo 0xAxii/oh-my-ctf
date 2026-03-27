@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.omc/
+logs/
+node_modules/
+dist/
+*.zip
+.env
+
+# Test challenge artifacts (solver-generated files)
+ctf-solver/tests/challenges/*/logs/
+ctf-solver/tests/challenges/*/*.txt
+ctf-solver/tests/challenges/*/*.json
+ctf-solver/tests/challenges/*/*.cookies
+ctf-solver/tests/challenges/*/*.html
+ctf-solver/tests/challenges/*/*.xml
+ctf-solver/tests/challenges/*/*.zst
+ctf-solver/tests/challenges/*/pow_solver
+ctf-solver/tests/challenges/fruit-market/deploy/

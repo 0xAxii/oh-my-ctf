@@ -1,0 +1,29 @@
+FROM ctf-base:latest
+
+RUN apt-get update && apt-get install -y \
+    # Stego
+    steghide exiftool pngcheck imagemagick \
+    # Filesystem forensics
+    sleuthkit foremost dcfldd testdisk \
+    # Network
+    tshark wireshark-common \
+    # Audio/media
+    ffmpeg sox \
+    # OCR
+    tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir \
+    volatility3 \
+    pytesseract
+
+# zsteg
+RUN gem install zsteg
+
+# stegseek
+RUN apt-get update && apt-get install -y libmhash-dev libmcrypt-dev libjpeg-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth=1 https://github.com/RickdeJager/stegseek /tmp/stegseek \
+    && cmake -S /tmp/stegseek -B /tmp/stegseek/build \
+    && cmake --build /tmp/stegseek/build --target install \
+    && rm -rf /tmp/stegseek

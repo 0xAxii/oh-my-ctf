@@ -1,0 +1,29 @@
+FROM ctf-base:latest
+
+RUN apt-get update && apt-get install -y \
+    sagemath \
+    hashcat john \
+    libhwloc-dev libbz2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir \
+    pycryptodome \
+    sympy \
+    gmpy2 \
+    z3-solver \
+    fpylll
+
+# RsaCtfTool
+RUN git clone --depth=1 https://github.com/RsaCtfTool/RsaCtfTool /opt/RsaCtfTool \
+    && pip3 install --no-cache-dir /opt/RsaCtfTool
+
+# cado-nfs (optional — build manually if needed)
+# RUN git clone --depth=1 https://gitlab.inria.fr/cado-nfs/cado-nfs.git /opt/cado-nfs \
+#     && cd /opt/cado-nfs && make -j$(nproc)
+
+# flatter (fast lattice reduction)
+RUN git clone --depth=1 https://github.com/keeganryan/flatter /tmp/flatter \
+    && cmake -S /tmp/flatter -B /tmp/flatter/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /tmp/flatter/build -j$(nproc) \
+    && cmake --install /tmp/flatter/build \
+    && ldconfig && rm -rf /tmp/flatter
