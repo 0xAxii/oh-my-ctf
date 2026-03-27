@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
+import os
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from core.light_critic import LightCritic
 from core.message_bus import ChallengeMessageBus
@@ -40,6 +42,48 @@ def _backoff(bump_count: int) -> float:
     delay = min(BASE_BACKOFF * (2 ** bump_count), MAX_BACKOFF)
     jitter = random.uniform(-5, 5)
     return max(0, delay + jitter)
+
+
+def _setup_workspace(challenge_dir: str, models: list[str]) -> Path:
+    """Create workspace directory with per-solver subdirs and challenge symlinks.
+
+    Structure:
+      workspace/{name}_{timestamp}/
+        challenge/          ← symlink to original challenge dir
+        gpt-5.4/
+          challenge/ → ../challenge
+          logs/
+        gpt-5.2/
+          challenge/ → ../challenge
+          logs/
+        findings_verified.json
+    """
+    challenge_path = Path(challenge_dir).resolve()
+    name = challenge_path.name
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    project_root = Path(__file__).parent.parent
+    ws = project_root / "workspace" / f"{name}_{ts}"
+    ws.mkdir(parents=True, exist_ok=True)
+
+    # Symlink original challenge
+    challenge_link = ws / "challenge"
+    if not challenge_link.exists():
+        challenge_link.symlink_to(challenge_path)
+
+    # Per-solver dirs
+    for model in models:
+        model_short = model.replace("gpt-", "")  # "5.4", "5.2"
+        solver_dir = ws / model_short
+        solver_dir.mkdir(exist_ok=True)
+        (solver_dir / "logs").mkdir(exist_ok=True)
+
+        # Symlink challenge into solver dir
+        solver_challenge = solver_dir / "challenge"
+        if not solver_challenge.exists():
+            solver_challenge.symlink_to(challenge_link)
+
+    logger.info("Workspace created: %s", ws)
+    return ws
 
 
 def _build_solver_prompt(model: str, category: str, recon_facts: str) -> str:
@@ -87,13 +131,21 @@ class ChallengeSwarm:
     winner: SolverResult | None = None
     light_critic: LightCritic | None = None
 
+    workspace_dir: Path | None = None
+
     # Tool installation flow (host-only, same thread resume)
     tool_request_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     tool_installed_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def run(self) -> SolverResult | None:
         """Run both solvers in parallel. Returns winner's result or None."""
-        self.light_critic = LightCritic(challenge_dir=self.challenge_dir, on_flag_found=asyncio.Queue())
+        models = ["gpt-5.4", "gpt-5.2"]
+        self.workspace_dir = _setup_workspace(self.challenge_dir, models)
+
+        self.light_critic = LightCritic(
+            challenge_dir=str(self.workspace_dir),
+            on_flag_found=asyncio.Queue(),
+        )
         await self.light_critic.start()
 
         prompt_a = _build_solver_prompt("gpt-5.4", self.category, self.recon_facts)
@@ -147,14 +199,22 @@ class ChallengeSwarm:
             if self.light_critic:
                 await self.light_critic.stop()
 
+    def _solver_cwd(self, model: str) -> str:
+        """Get solver's working directory in workspace."""
+        if self.workspace_dir:
+            model_short = model.replace("gpt-", "")
+            return str(self.workspace_dir / model_short)
+        return self.challenge_dir
+
     async def _run_solver(
         self, model: str, effort: str, system_prompt: str,
     ) -> SolverResult | None:
         """Run one solver with bump loop."""
+        solver_cwd = self._solver_cwd(model)
         solver = AppServerSolver(
             model_spec=model,
             effort=effort,
-            challenge_dir=self.challenge_dir,
+            challenge_dir=solver_cwd,
             system_prompt=system_prompt,
             cancel_event=self.cancel_event,
             message_bus=self.message_bus,
@@ -266,6 +326,11 @@ class ChallengeSwarm:
                 insights = verified if verified else self._gather_insights(model)
             else:
                 insights = self._gather_insights(model)
+
+            # Clear findings_raw.md for fresh start
+            findings_raw = Path(solver.challenge_dir) / "findings_raw.md"
+            if findings_raw.exists():
+                findings_raw.unlink()
 
             # Fresh session: new thread, verified findings only
             logger.info("[%s] Bump %d (effort=%s), starting fresh session", model, bump_count, new_effort)
