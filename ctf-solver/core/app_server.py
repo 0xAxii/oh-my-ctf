@@ -139,7 +139,7 @@ class AppServerClient:
         thread_id: str,
         input_items: list[dict[str, str]],
         effort: str | None = None,
-        sandbox: str = "externalSandbox",
+        sandbox: str | dict = "externalSandbox",
     ) -> str:
         """Start a turn. Returns turnId."""
         params: dict[str, Any] = {
@@ -147,7 +147,9 @@ class AppServerClient:
             "input": input_items,
             "approvalPolicy": "never",
         }
-        if sandbox == "externalSandbox":
+        if isinstance(sandbox, dict):
+            params["sandboxPolicy"] = sandbox
+        elif sandbox == "externalSandbox":
             params["sandboxPolicy"] = {
                 "type": "externalSandbox",
                 "networkAccess": "enabled",
